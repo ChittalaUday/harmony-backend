@@ -10,7 +10,9 @@
     "start": "tsc && node dst/server.js",
     "dev": "ts-node server.ts",
     "build": "tsc",
-    "vercel-build": "tsc"
+    "vercel-build": "tsc",
+    "deploy": "vercel --prod",
+    "preview": "vercel"
   },
   "dependencies": {
     "axios": "^1.8.4",

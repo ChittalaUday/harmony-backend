@@ -2,29 +2,15 @@ import { Request, Response } from 'express';
 import * as path from 'path';
 import * as mm from 'music-metadata';
 import multer from 'multer';
-import * as fs from 'fs';
 import admin from '../config/firebase';
 import Song, { ISong } from '../models/songModel';
 import axios from 'axios';
 import { IAudioMetadata } from 'music-metadata';
 import mongoose from 'mongoose';
 
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const tempDir = path.join(process.cwd(), 'temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-    cb(null, tempDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    cb(null, file.fieldname + '-' + uniqueSuffix + ext);
-  }
-});
+// Serverless-compatible multer configuration using memory storage
 export const songUploadMultiple = multer({
-  storage: storage,  // Assuming your storage configuration remains the same as before
+  storage: multer.memoryStorage(), // Use memory storage for serverless
   limits: { fileSize: 15 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('audio/')) {
@@ -36,7 +22,7 @@ export const songUploadMultiple = multer({
 }).array('songs');
 
 export const songUpload = multer({
-  storage: storage,
+  storage: multer.memoryStorage(), // Use memory storage for serverless
   limits: { fileSize: 15 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype.startsWith('audio/')) {
@@ -54,11 +40,9 @@ export class SongController {
     this.bucket = admin.storage().bucket();
   }
 
-  private async extractMetadata(filePath: string, originalFilename: string): Promise<any> {
+  private async extractMetadata(fileBuffer: Buffer, originalFilename: string): Promise<any> {
     try {
-      const stats = fs.statSync(filePath);
-      const fileContent = fs.readFileSync(filePath);
-      const metadata = await mm.parseBuffer(fileContent);
+      const metadata = await mm.parseBuffer(fileBuffer);
 
       let composerValue = metadata.common.composer || 'Unknown Composer';
       if (Array.isArray(composerValue) && composerValue.length > 0) {
@@ -82,7 +66,7 @@ export class SongController {
         sampleRate: metadata.format.sampleRate,
         channels: metadata.format.numberOfChannels,
         format: metadata.format.container,
-        fileSize: stats.size,
+        fileSize: fileBuffer.length,
         originalFilename: originalFilename,
         uploadDate: new Date(),
         coverImage
@@ -93,18 +77,19 @@ export class SongController {
     }
   }
 
-  private async uploadToFirebase(filePath: string, originalFilename: string, song: ISong): Promise<string> {
+  private async uploadToFirebase(fileBuffer: Buffer, originalFilename: string, song: ISong): Promise<string> {
     try {
       const ext = path.extname(originalFilename);
       const storageFilename = `songs/${song.songId}${ext}`;
-      await this.bucket.upload(filePath, {
-        destination: storageFilename,
+
+      const file = this.bucket.file(storageFilename);
+      await file.save(fileBuffer, {
         metadata: {
           contentType: `audio/${ext.substring(1)}`,
           metadata: { originalFilename, songId: song.songId, mongoDbId: song._id.toString() }
         }
       });
-      await this.bucket.file(storageFilename).makePublic();
+      await file.makePublic();
       return `https://storage.googleapis.com/${this.bucket.name}/${storageFilename}`;
     } catch (error) {
       console.error('Error uploading to Firebase:', error);
@@ -138,29 +123,27 @@ export class SongController {
         return;
       }
 
-      const tempFilePath = req.file.path;
       const originalFilename = req.file.originalname;
+      const fileBuffer = req.file.buffer;
 
       try {
-        const metadata = await this.extractMetadata(tempFilePath, originalFilename);
+        const metadata = await this.extractMetadata(fileBuffer, originalFilename);
         const userId = req.user?.id || null;
         const song = new Song({ ...metadata, userId });
 
         // Check if a cover image exists, if not use a default image
-        let coverImageUrl = metadata.coverImage || __dirname + "../assests/282120.png"; // Set default image path
-        if (coverImageUrl !== __dirname + "../assests/282120.png") {
-          // If the cover image is found, upload it
-          coverImageUrl = await this.uploadCoverImage(metadata.coverImage, song.songId);
+        let coverImageUrl = metadata.coverImage ? await this.uploadCoverImage(metadata.coverImage, song.songId) : null;
+        if (!coverImageUrl) {
+          // Use a default cover image URL (you can host this on Firebase or CDN)
+          coverImageUrl = "gs://music-test-web.firebasestorage.app/282120.png";
         }
         song.coverImageUrl = coverImageUrl;
 
         await song.save();
 
-        const fileUrl = await this.uploadToFirebase(tempFilePath, originalFilename, song);
+        const fileUrl = await this.uploadToFirebase(fileBuffer, originalFilename, song);
         song.fileUrl = fileUrl;
         await song.save();
-
-        fs.unlinkSync(tempFilePath);
 
         res.status(200).json({
           success: true,
@@ -169,7 +152,6 @@ export class SongController {
         });
       } catch (error) {
         console.error('Error processing uploaded file:', error);
-        if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
         res.status(500).json({ success: false, message: 'Failed to process uploaded file', error });
       }
     } catch (error) {
@@ -316,10 +298,7 @@ export class SongController {
 
         if (!picture) {
           // No cover image embedded, return a fallback image
-          const defaultCoverImagePath = 'path/to/default/cover-image.png'; // Replace with your fallback image path
-          const defaultCoverImage = fs.readFileSync(defaultCoverImagePath);
-          res.setHeader('Content-Type', 'image/png');
-          res.send(defaultCoverImage);
+          res.status(404).json({ message: 'No cover image found for this song' });
         } else {
           // Send the extracted cover image
           res.setHeader('Content-Type', picture.format || 'image/jpeg');
@@ -327,11 +306,8 @@ export class SongController {
         }
       } catch (error) {
         console.error('Error extracting cover image from audio file:', error);
-        // If extraction fails, send fallback image
-        const defaultCoverImagePath = 'path/to/default/cover-image.png'; // Replace with your fallback image path
-        const defaultCoverImage = fs.readFileSync(defaultCoverImagePath);
-        res.setHeader('Content-Type', 'image/png');
-        res.send(defaultCoverImage);
+        // If extraction fails, return error
+        res.status(500).json({ message: 'Error extracting cover image' });
       }
     } catch (error) {
       console.error('Error processing cover image request:', error);
