@@ -42,16 +42,19 @@ const upload = multer({
   }
 });
 
-// Create temp directory if not exists
+// Create temp directory if not exists (only in non-serverless environments)
 const tempDir = 'temp';
-if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+if (process.env.NODE_ENV !== 'production' && !fs.existsSync(tempDir)) {
+  fs.mkdirSync(tempDir);
+}
 
-// Logging setup
-const logDirectory = path.join(__dirname, '../logs');
-if (!fs.existsSync(logDirectory)) fs.mkdirSync(logDirectory);
-const accessLogStream = fs.createWriteStream(path.join(logDirectory, 'access.log'), { flags: 'a' });
-
-router.use(morgan('combined', { stream: accessLogStream }));
+// Logging setup (simplified for serverless)
+if (process.env.NODE_ENV !== 'production') {
+  const logDirectory = path.join(__dirname, '../logs');
+  if (!fs.existsSync(logDirectory)) fs.mkdirSync(logDirectory);
+  const accessLogStream = fs.createWriteStream(path.join(logDirectory, 'access.log'), { flags: 'a' });
+  router.use(morgan('combined', { stream: accessLogStream }));
+}
 router.use(morgan('dev'));
 
 // Debug log for form-data

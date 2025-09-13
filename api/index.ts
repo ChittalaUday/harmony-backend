@@ -17,8 +17,22 @@ app.use(cors({
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'OK',
+        timestamp: new Date().toISOString(),
+        environment: process.env.NODE_ENV || 'development'
+    });
+});
+
 app.use(router);
-app.use(express.static('public'));
+
+// Static file serving (only in non-serverless environments)
+if (process.env.NODE_ENV !== 'production') {
+    app.use(express.static('public'));
+}
 
 // Connect to database
 connectDB().catch((error) => {
