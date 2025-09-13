@@ -1,0 +1,9 @@
+node_modules
+dst
+logs
+temp
+*.log
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
